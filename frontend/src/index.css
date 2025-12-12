@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 自定义全局样式 */
+* {
+  @apply transition-colors duration-300;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-slate-950 text-slate-200 font-sans overflow-x-hidden;
+  background-image: 
+    radial-gradient(circle at 20% 50%, rgba(6, 182, 212, 0.1) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(168, 85, 247, 0.1) 0%, transparent 50%);
+}
+
+/* 玻璃拟态基础样式 */
+.glass {
+  @apply bg-white/5 backdrop-blur-md border border-white/10 rounded-lg;
+}
+
+.glass-sm {
+  @apply bg-white/5 backdrop-blur-sm border border-white/5 rounded-md;
+}
+
+/* 渐变文本 */
+.gradient-text {
+  @apply bg-gradient-cyberpunk bg-clip-text text-transparent;
+}
+
+/* 发光效果 */
+.glow-cyan {
+  @apply shadow-glow-cyan;
+}
+
+.glow-violet {
+  @apply shadow-glow-violet;
+}
+
+.glow-mix {
+  @apply shadow-glow-mix;
+}
+
+/* 代码/终端风格文本 */
+.font-code {
+  @apply font-mono text-sm tracking-wider;
+}
+
+/* 按钮样式 */
+.btn-primary {
+  @apply px-4 py-2 bg-gradient-cyberpunk rounded-lg font-semibold text-white hover:shadow-glow-cyan transition-all duration-300 active:scale-95;
+}
+
+.btn-secondary {
+  @apply px-4 py-2 glass hover:border-cyan-500/30 font-semibold text-slate-200 transition-all duration-300 active:scale-95;
+}
+
+/* 输入框样式 */
+.input-primary {
+  @apply w-full px-4 py-2 bg-slate-900/50 border border-white/10 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 focus:shadow-glow-cyan transition-all duration-300;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  @apply w-2 h-2;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-slate-900/20;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gradient-cyberpunk rounded-lg hover:bg-violet-500;
+}
