@@ -6,7 +6,7 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        'mono': ['Courier New', 'monospace', 'ui-monospace'],
+        'mono': ['JetBrains Mono', 'Courier New', 'monospace', 'ui-monospace'],
         'sans': ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
       },
       colors: {
