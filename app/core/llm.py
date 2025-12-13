@@ -12,13 +12,14 @@ class LLMService:
         )
         self.model = settings.LLM_MODEL_NAME
     
-    def generate_suggestion(self, user_text: str, related_quotes: List[Dict]) -> List[str]:
+    def generate_suggestion(self, user_text: str, related_quotes: List[Dict], parent_content: str = None) -> List[str]:
         """
         根据用户输入和相关金句生成回复建议
         
         Args:
-            user_text: 用户说的话
+            user_text: 用户说的话 (或当前会话上下文)
             related_quotes: RAG 检索出的相关金句列表
+            parent_content: 父节点内容 (如果是在进行思维延展)
         
         Returns:
             建议回复列表
@@ -30,7 +31,26 @@ class LLMService:
         ])
         
         # Prompt 设计
-        prompt = f"""你是一个社交对话助手，帮助用户在聊天时展现智慧和幽默。
+        if parent_content:
+            # 思维延展模式
+            prompt = f"""你是一个深度思维助手，正在帮助用户进行思维发散。
+
+当前思维节点："{parent_content}"
+用户补充/上下文："{user_text}"
+
+请基于当前节点，结合以下金句灵感，生成 3 个后续思维发展方向（候选节点）：
+{quotes_context}
+
+要求：
+1. 必须是基于“当前思维节点”的进一步延伸或反转。
+2. 结合金句的智慧，但不要生硬引用。
+3. 三个方向要有差异（例如：一个是深入分析，一个是幽默反转，一个是行动建议）。
+4. 每个选项不超过 20 字。
+
+直接返回 3 条建议，每条一行。"""
+        else:
+            # 普通建议模式
+            prompt = f"""你是一个社交对话助手，帮助用户在聊天时展现智慧和幽默。
 
 用户正在说："{user_text}"
 

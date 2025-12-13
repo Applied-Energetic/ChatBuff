@@ -14,6 +14,7 @@ class SuggestionRequest(BaseModel):
     """建议请求模型"""
     text: str
     context: Optional[str] = None
+    parent_content: Optional[str] = None  # 上级节点内容，用于思维延展
 
 class SuggestionResponse(BaseModel):
     """建议响应模型"""

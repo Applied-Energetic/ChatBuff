@@ -52,7 +52,11 @@ async def get_suggestion(request: SuggestionRequest):
             )
         
         # Step 2: LLM 生成建议
-        suggestions = llm_service.generate_suggestion(request.text, related_quotes)
+        suggestions = llm_service.generate_suggestion(
+            user_text=request.text, 
+            related_quotes=related_quotes,
+            parent_content=request.parent_content
+        )
         
         # Step 3: 返回结果
         return SuggestionResponse(

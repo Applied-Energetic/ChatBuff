@@ -10,7 +10,7 @@ const Dashboard = () => {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [history, setHistory] = useState([
-    { id: Date.now(), timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }), text: '系统已启动 — 本次会话开始', isUser: false }
+    { id: Date.now(), type: 'system', message: 'System started - Session begins', timestamp: new Date().toLocaleTimeString() }
   ]);
 
   // Toggle Dark Mode
@@ -22,16 +22,22 @@ const Dashboard = () => {
     }
   }, [isDarkMode]);
 
-  const addHistory = (text, isUser = false) => {
-    const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setHistory(prev => [...prev, { id: Date.now() + Math.random(), timestamp, text, isUser }]);
+  // Support both old string format and new object format
+  const addHistory = (entry) => {
+    const timestamp = new Date().toLocaleTimeString();
+    if (typeof entry === 'string') {
+      // Old format: just a string
+      setHistory(prev => [...prev, { id: Date.now() + Math.random(), type: 'event', message: entry, timestamp }]);
+    } else {
+      // New format: object with type, message, tokens, etc.
+      setHistory(prev => [...prev, { id: Date.now() + Math.random(), ...entry, timestamp: entry.timestamp || timestamp }]);
+    }
   };
 
   const clearHistory = () => {
     setHistory([]);
-    // Optional: keep a small system entry that notes the clear action
-    const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setHistory([{ id: Date.now(), timestamp, text: '会话已清空 — 新会话开始', isUser: false }]);
+    const timestamp = new Date().toLocaleTimeString();
+    setHistory([{ id: Date.now(), type: 'system', message: 'Session cleared - New session begins', timestamp }]);
   };
 
   return (
@@ -72,7 +78,7 @@ const Dashboard = () => {
           {/* Right Pane: Mind Map */}
           <Panel defaultSize={75}>
             <div className="h-full w-full relative bg-gray-50/50 dark:bg-zinc-900">
-              <MindMap />
+              <MindMap addHistory={addHistory} />
               
               {/* Floating Audio Visualizer */}
               <AudioVisualizer 
