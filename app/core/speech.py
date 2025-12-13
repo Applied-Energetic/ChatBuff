@@ -4,6 +4,8 @@
 import io
 import base64
 import asyncio
+import tempfile
+import os
 from typing import Optional, Callable, List, Dict, Any
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -82,6 +84,7 @@ class SpeechRecognitionService:
         self.model_size = model_size
         self.model = None
         self.is_initialized = False
+        self.is_loading = False
         self.context = ConversationContext()
         
         # 说话人检测状态
@@ -89,35 +92,44 @@ class SpeechRecognitionService:
         self._speaker_energy_threshold = 0.02
         
     async def initialize(self):
-        """异步初始化模型"""
-        if self.is_initialized:
+        """异步初始化模型 - 懒加载，不阻塞启动"""
+        if self.is_initialized or self.is_loading:
             return
             
+        self.is_loading = True
+        
         if self.mode == "offline":
-            try:
-                # 尝试加载 faster-whisper
-                from faster_whisper import WhisperModel
-                
-                # 使用 CPU 模式 (也支持 CUDA)
-                self.model = WhisperModel(
-                    self.model_size, 
-                    device="cpu",
-                    compute_type="int8"
-                )
-                print(f"✅ Whisper 模型已加载: {self.model_size}")
-                self.is_initialized = True
-                
-            except ImportError:
-                print("⚠️ faster-whisper 未安装，将使用模拟模式")
-                self.mode = "mock"
-                self.is_initialized = True
-                
-            except Exception as e:
-                print(f"⚠️ Whisper 加载失败: {e}，将使用模拟模式")
-                self.mode = "mock"
-                self.is_initialized = True
-        else:
-            self.is_initialized = True
+            # 在后台线程中加载模型
+            print("🔄 正在后台加载 Whisper 模型...")
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, self._load_whisper_model)
+        
+        # 先标记为已初始化，允许服务启动
+        self.is_initialized = True
+        
+    def _load_whisper_model(self):
+        """在后台线程中加载 Whisper 模型"""
+        try:
+            from faster_whisper import WhisperModel
+            
+            # 使用 CPU 模式 (也支持 CUDA)
+            self.model = WhisperModel(
+                self.model_size, 
+                device="cpu",
+                compute_type="int8"
+            )
+            print(f"✅ Whisper 模型已加载: {self.model_size}")
+            self.is_loading = False
+            
+        except ImportError:
+            print("⚠️ faster-whisper 未安装，将使用模拟模式")
+            self.mode = "mock"
+            self.is_loading = False
+            
+        except Exception as e:
+            print(f"⚠️ Whisper 加载失败: {e}，将使用模拟模式")
+            self.mode = "mock"
+            self.is_loading = False
     
     async def transcribe_audio(
         self, 
@@ -145,8 +157,15 @@ class SpeechRecognitionService:
         # 检测说话人 (基于简单的能量检测)
         speaker = await self._detect_speaker(audio_data) if detect_speaker else "user"
         
-        if self.mode == "offline" and self.model:
-            return await self._transcribe_whisper(audio_data, sample_rate, speaker)
+        # 检查模型是否已加载
+        if self.mode == "offline":
+            if self.model:
+                return await self._transcribe_whisper(audio_data, sample_rate, speaker)
+            elif self.is_loading:
+                print("⏳ Whisper 模型正在加载中，使用模拟模式...")
+                return await self._transcribe_mock(audio_data, speaker)
+            else:
+                return await self._transcribe_mock(audio_data, speaker)
         else:
             return await self._transcribe_mock(audio_data, speaker)
     
@@ -170,47 +189,77 @@ class SpeechRecognitionService:
         speaker: str
     ) -> Optional[TranscriptSegment]:
         """使用 Whisper 模型转录"""
+        temp_file = None
         try:
-            # 将 PCM 数据转换为 WAV 格式
-            wav_buffer = io.BytesIO()
-            with wave.open(wav_buffer, 'wb') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(sample_rate)
-                wav_file.writeframes(audio_data)
+            # 检测音频格式
+            is_webm = audio_data[:4] == b'\x1a\x45\xdf\xa3' or b'webm' in audio_data[:50].lower()
+            is_ogg = audio_data[:4] == b'OggS'
             
-            wav_buffer.seek(0)
+            if is_webm or is_ogg:
+                # WebM/Opus 格式 - 保存为临时文件让 whisper 处理
+                suffix = '.webm' if is_webm else '.ogg'
+                temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                temp_file.write(audio_data)
+                temp_file.close()
+                audio_source = temp_file.name
+            else:
+                # PCM 数据 - 转换为 WAV
+                wav_buffer = io.BytesIO()
+                with wave.open(wav_buffer, 'wb') as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)  # 16-bit
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(audio_data)
+                wav_buffer.seek(0)
+                audio_source = wav_buffer
             
-            # 转录
-            segments, info = self.model.transcribe(
-                wav_buffer,
-                language="zh",  # 中文优先
-                vad_filter=True,  # 启用 VAD
-                vad_parameters=dict(min_silence_duration_ms=500)
+            # 转录 - 在线程池中运行以避免阻塞
+            loop = asyncio.get_event_loop()
+            segments, info = await loop.run_in_executor(
+                None,
+                lambda: self.model.transcribe(
+                    audio_source,
+                    language="zh",
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=300),
+                    beam_size=5,
+                    best_of=3
+                )
             )
             
             # 合并所有片段
             text_parts = []
             start_time = 0
             end_time = 0
+            total_confidence = 0
+            segment_count = 0
             
             for segment in segments:
-                text_parts.append(segment.text.strip())
-                if not start_time:
-                    start_time = segment.start
-                end_time = segment.end
+                text = segment.text.strip()
+                if text:
+                    text_parts.append(text)
+                    if not start_time:
+                        start_time = segment.start
+                    end_time = segment.end
+                    # 计算平均置信度
+                    if hasattr(segment, 'avg_logprob'):
+                        import math
+                        total_confidence += math.exp(segment.avg_logprob)
+                        segment_count += 1
             
-            full_text = " ".join(text_parts)
+            full_text = "".join(text_parts)
             
             if not full_text.strip():
                 return None
+            
+            avg_confidence = (total_confidence / segment_count) if segment_count > 0 else 0.9
             
             result = TranscriptSegment(
                 text=full_text,
                 speaker=speaker,
                 start_time=start_time,
                 end_time=end_time,
-                confidence=0.9
+                confidence=min(avg_confidence, 0.99)
             )
             
             # 添加到上下文
@@ -220,7 +269,16 @@ class SpeechRecognitionService:
             
         except Exception as e:
             print(f"Whisper 转录失败: {e}")
+            import traceback
+            traceback.print_exc()
             return None
+        finally:
+            # 清理临时文件
+            if temp_file and os.path.exists(temp_file.name):
+                try:
+                    os.unlink(temp_file.name)
+                except:
+                    pass
     
     async def _transcribe_mock(
         self, 

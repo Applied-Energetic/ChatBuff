@@ -120,7 +120,14 @@ async def transcribe_audio(request: TranscribeRequest):
         )
         
         if not result:
-            raise HTTPException(status_code=400, detail="无法识别音频内容")
+            # 返回空结果而不是错误，让前端处理
+            from datetime import datetime
+            return TranscribeResponse(
+                text="",
+                speaker="user",
+                confidence=0.0,
+                timestamp=datetime.now().isoformat()
+            )
         
         return TranscribeResponse(
             text=result.text,
@@ -130,8 +137,9 @@ async def transcribe_audio(request: TranscribeRequest):
         )
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============ 对话辅助 API ============
 
@@ -253,6 +261,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
     
     支持实时语音流处理和建议推送
     """
+    import asyncio
+    
     if not client_id:
         client_id = str(uuid.uuid4())[:8]
     
@@ -271,10 +281,25 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
                 sample_rate = data.get("sample_rate", 16000)
                 
                 if audio_base64:
+                    # 模拟流式识别：先发送"正在识别..."状态
+                    await connection_manager.send_to_client(client_id, {
+                        "type": "streaming_text",
+                        "text": "正在识别语音..."
+                    })
+                    
                     result = await speech_service.transcribe_base64(audio_base64, sample_rate)
                     
                     if result:
-                        # 发送转录结果
+                        # 模拟逐字显示效果
+                        text = result.text
+                        for i in range(1, len(text) + 1):
+                            await connection_manager.send_to_client(client_id, {
+                                "type": "streaming_text",
+                                "text": text[:i]
+                            })
+                            await asyncio.sleep(0.03)  # 30ms 延迟模拟打字效果
+                        
+                        # 发送最终转录结果
                         await connection_manager.send_to_client(client_id, {
                             "type": "transcript",
                             "data": {
@@ -301,19 +326,57 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
                         })
             
             elif msg_type == "text":
-                # 处理文本输入
+                # 处理文本输入 - 支持流式分析
+                text = data.get("text", "")
+                speaker = data.get("speaker", "other")
+                stream = data.get("stream", False)
+                
+                if text:
+                    if stream:
+                        # 流式模式：文本输入时就开始分析
+                        await connection_manager.send_to_client(client_id, {
+                            "type": "streaming_text",
+                            "text": text
+                        })
+                    else:
+                        # 完整处理模式
+                        result = await conversation_assistant.process_text(text, speaker)
+                        
+                        await connection_manager.send_to_client(client_id, {
+                            "type": "suggestions",
+                            "data": {
+                                "suggestions": [s.to_dict() for s in result.suggestions],
+                                "related_news": result.related_news,
+                                "context_summary": result.context_summary,
+                                "topics": result.topics
+                            }
+                        })
+            
+            elif msg_type == "stream_complete":
+                # 流式输入完成，开始生成建议
                 text = data.get("text", "")
                 speaker = data.get("speaker", "other")
                 
                 if text:
                     result = await conversation_assistant.process_text(text, speaker)
                     
+                    # 发送转录结果
+                    await connection_manager.send_to_client(client_id, {
+                        "type": "transcript",
+                        "data": {
+                            "text": text,
+                            "speaker": speaker,
+                            "confidence": 1.0,
+                            "timestamp": None
+                        }
+                    })
+                    
+                    # 发送建议
                     await connection_manager.send_to_client(client_id, {
                         "type": "suggestions",
                         "data": {
                             "suggestions": [s.to_dict() for s in result.suggestions],
                             "related_news": result.related_news,
-                            "context_summary": result.context_summary,
                             "topics": result.topics
                         }
                     })

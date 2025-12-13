@@ -4,15 +4,31 @@ import { Mic, MicOff, Loader2 } from 'lucide-react';
 
 const API_BASE_URL = 'http://localhost:8000';
 
-const AudioVisualizer = ({ isActive = false, onClick, onTranscript, onSuggestions }) => {
+const AudioVisualizer = ({ 
+  isActive = false, 
+  onClick, 
+  onTranscript, 
+  onSuggestions,
+  onStreamingText,  // 新增：实时流式文本回调
+  onRecordingChange // 新增：录音状态变化回调
+}) => {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
+  const [streamingText, setStreamingText] = useState('');
   
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const wsRef = useRef(null);
   const clientIdRef = useRef(`client-${Date.now()}`);
+  const streamIntervalRef = useRef(null);
+
+  // 通知录音状态变化
+  useEffect(() => {
+    if (onRecordingChange) {
+      onRecordingChange(isRecording);
+    }
+  }, [isRecording, onRecordingChange]);
 
   // WebSocket 连接
   const connectWebSocket = useCallback(() => {
@@ -29,7 +45,17 @@ const AudioVisualizer = ({ isActive = false, onClick, onTranscript, onSuggestion
       try {
         const data = JSON.parse(event.data);
         
+        // 处理流式文本更新
+        if (data.type === 'streaming_text') {
+          setStreamingText(data.text);
+          if (onStreamingText) {
+            onStreamingText(data.text);
+          }
+        }
+        
+        // 处理完整转录
         if (data.type === 'transcript' && onTranscript) {
+          setStreamingText(''); // 清空流式文本
           onTranscript(data.data);
         }
         
@@ -51,7 +77,7 @@ const AudioVisualizer = ({ isActive = false, onClick, onTranscript, onSuggestion
     };
     
     wsRef.current = ws;
-  }, [onTranscript, onSuggestions]);
+  }, [onTranscript, onSuggestions, onStreamingText]);
 
   // 组件挂载时尝试连接 WebSocket
   useEffect(() => {
@@ -60,6 +86,9 @@ const AudioVisualizer = ({ isActive = false, onClick, onTranscript, onSuggestion
     return () => {
       if (wsRef.current) {
         wsRef.current.close();
+      }
+      if (streamIntervalRef.current) {
+        clearInterval(streamIntervalRef.current);
       }
     };
   }, [connectWebSocket]);
@@ -72,23 +101,33 @@ const AudioVisualizer = ({ isActive = false, onClick, onTranscript, onSuggestion
           sampleRate: 16000,
           channelCount: 1,
           echoCancellation: true,
-          noiseSuppression: true
+          noiseSuppression: true,
+          autoGainControl: true
         } 
       });
       
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
+      // 检查支持的 MIME 类型
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : 'audio/ogg';
+      
+      console.log('使用音频格式:', mimeType);
+      
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
       
       audioChunksRef.current = [];
       
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
+          console.log(`收集音频块: ${event.data.size} bytes, 总计: ${audioChunksRef.current.length} 块`);
         }
       };
       
       mediaRecorder.onstop = async () => {
+        console.log(`录音结束，共 ${audioChunksRef.current.length} 个音频块`);
         if (audioChunksRef.current.length > 0) {
           await processAudio();
         }
@@ -96,18 +135,21 @@ const AudioVisualizer = ({ isActive = false, onClick, onTranscript, onSuggestion
       };
       
       mediaRecorderRef.current = mediaRecorder;
-      mediaRecorder.start(1000); // 每秒收集一次数据
+      // 每2秒收集一次数据，确保有足够的音频数据
+      mediaRecorder.start(2000);
       setIsRecording(true);
+      console.log('✅ 开始录音');
       
     } catch (error) {
       console.error('无法访问麦克风:', error);
-      alert('无法访问麦克风，请检查权限设置');
+      alert('无法访问麦克风，请检查权限设置\n错误: ' + error.message);
     }
   };
 
   // 停止录音
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
+      console.log('🛑 停止录音');
       mediaRecorderRef.current.stop();
       setIsRecording(false);
     }
@@ -115,34 +157,44 @@ const AudioVisualizer = ({ isActive = false, onClick, onTranscript, onSuggestion
 
   // 处理音频
   const processAudio = async () => {
-    if (audioChunksRef.current.length === 0) return;
+    if (audioChunksRef.current.length === 0) {
+      console.log('没有音频数据');
+      return;
+    }
     
     setIsProcessing(true);
+    console.log('🔄 处理音频...');
     
     try {
       const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      console.log(`音频大小: ${audioBlob.size} bytes`);
+      
+      // 检查音频是否太小
+      if (audioBlob.size < 1000) {
+        console.log('音频太短，跳过处理');
+        setIsProcessing(false);
+        return;
+      }
       
       // 转换为 Base64
       const reader = new FileReader();
-      reader.readAsDataURL(audioBlob);
       
-      reader.onloadend = () => {
+      reader.onloadend = async () => {
         const base64Audio = reader.result.split(',')[1];
+        console.log(`Base64 长度: ${base64Audio.length}`);
         
-        // 通过 WebSocket 发送
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            type: 'audio',
-            audio_data: base64Audio,
-            sample_rate: 16000
-          }));
-        } else {
-          // 回退到 HTTP API
-          sendViaHttp(base64Audio);
-        }
+        // 优先使用 HTTP API（更稳定）
+        await sendViaHttp(base64Audio);
         
         setIsProcessing(false);
       };
+      
+      reader.onerror = (error) => {
+        console.error('FileReader 错误:', error);
+        setIsProcessing(false);
+      };
+      
+      reader.readAsDataURL(audioBlob);
       
     } catch (error) {
       console.error('音频处理失败:', error);
@@ -150,26 +202,52 @@ const AudioVisualizer = ({ isActive = false, onClick, onTranscript, onSuggestion
     }
   };
 
-  // HTTP 回退方式
+  // HTTP API 发送音频
   const sendViaHttp = async (base64Audio) => {
+    console.log('📤 发送音频到服务器...');
+    
     try {
       const response = await fetch(`${API_BASE_URL}/api/transcribe`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({
           audio_data: base64Audio,
-          sample_rate: 16000
+          sample_rate: 16000,
+          format: 'webm'
         })
       });
       
+      console.log('服务器响应状态:', response.status);
+      
       if (response.ok) {
         const data = await response.json();
-        if (onTranscript) {
-          onTranscript(data);
+        console.log('✅ 转录结果:', data);
+        
+        if (data.text && data.text.trim()) {
+          if (onTranscript) {
+            onTranscript(data);
+          }
+        } else {
+          console.log('⚠️ 转录结果为空');
         }
+      } else {
+        const errorText = await response.text();
+        console.error('❌ 服务器错误:', response.status, errorText);
       }
     } catch (error) {
-      console.error('HTTP 请求失败:', error);
+      console.error('❌ HTTP 请求失败:', error);
+      // 尝试 WebSocket 作为备选
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log('尝试 WebSocket 发送...');
+        wsRef.current.send(JSON.stringify({
+          type: 'audio',
+          audio_data: base64Audio,
+          sample_rate: 16000
+        }));
+      }
     }
   };
 

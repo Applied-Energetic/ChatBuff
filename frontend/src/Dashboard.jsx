@@ -1,14 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Sun, Moon, MoreHorizontal, Newspaper, Quote } from 'lucide-react';
+import { Sun, Moon, MoreHorizontal, Newspaper, Quote, MessageSquare } from 'lucide-react';
+import { AnimatePresence } from 'framer-motion';
 
 import ConversationHistory from './components/ConversationHistory';
 import MindMap from './components/MindMap';
 import AudioVisualizer from './components/AudioVisualizer';
+import LiveTranscriptPanel from './components/LiveTranscriptPanel';
 
 const Dashboard = () => {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [showTranscriptPanel, setShowTranscriptPanel] = useState(true);
   const [history, setHistory] = useState([
     { id: Date.now(), type: 'system', message: 'System started - Session begins', timestamp: new Date().toLocaleTimeString() }
   ]);
@@ -17,6 +21,10 @@ const Dashboard = () => {
   const [latestTranscript, setLatestTranscript] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [relatedNews, setRelatedNews] = useState([]);
+  
+  // 实时语音转文字状态
+  const [transcripts, setTranscripts] = useState([]);
+  const [currentStreamingText, setCurrentStreamingText] = useState('');
 
   // Toggle Dark Mode
   useEffect(() => {
@@ -42,18 +50,99 @@ const Dashboard = () => {
     setSuggestions([]);
     setRelatedNews([]);
     setLatestTranscript(null);
+    setTranscripts([]);
+    setCurrentStreamingText('');
     const timestamp = new Date().toLocaleTimeString();
     setHistory([{ id: Date.now(), type: 'system', message: 'Session cleared - New session begins', timestamp }]);
   };
 
+  // 清空转录记录
+  const clearTranscripts = useCallback(() => {
+    setTranscripts([]);
+    setCurrentStreamingText('');
+  }, []);
+
   // 处理语音转录结果
   const handleTranscript = useCallback((data) => {
     setLatestTranscript(data);
+    
+    // 添加到转录列表
+    setTranscripts(prev => [...prev, {
+      id: Date.now(),
+      text: data.text,
+      speaker: data.speaker,
+      confidence: data.confidence,
+      timestamp: data.timestamp || new Date().toISOString()
+    }]);
+    
+    // 清空流式文本
+    setCurrentStreamingText('');
+    
     addHistory({
       type: data.speaker === 'user' ? 'user' : 'other',
       message: `${data.speaker === 'user' ? '👤 你' : '🧑 对方'}: ${data.text}`,
       confidence: data.confidence
     });
+  }, [addHistory]);
+
+  // 处理流式文本更新
+  const handleStreamingText = useCallback((text) => {
+    setCurrentStreamingText(text);
+  }, []);
+
+  // 处理录音状态变化
+  const handleRecordingChange = useCallback((recording) => {
+    setIsRecording(recording);
+    if (recording) {
+      setShowTranscriptPanel(true);
+    }
+  }, []);
+
+  // 处理文本输入 - 模拟对话
+  const handleSendText = useCallback(async (text, speaker) => {
+    // 先添加到转录列表显示
+    const newTranscript = {
+      id: Date.now(),
+      text: text,
+      speaker: speaker,
+      confidence: 1.0,
+      timestamp: new Date().toISOString()
+    };
+    
+    setTranscripts(prev => [...prev, newTranscript]);
+    
+    addHistory({
+      type: speaker === 'user' ? 'user' : 'other',
+      message: `${speaker === 'user' ? '👤 你' : '🧑 对方'}: ${text}`,
+      confidence: 1.0
+    });
+
+    // 调用后端 API 获取建议
+    try {
+      const response = await fetch('http://localhost:8000/api/assistant/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, speaker })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.suggestions) {
+          setSuggestions(data.suggestions);
+        }
+        if (data.related_news) {
+          setRelatedNews(data.related_news);
+        }
+        
+        addHistory({
+          type: 'generate',
+          message: `AI 生成了 ${data.suggestions?.length || 0} 条建议`,
+          tokens: data.suggestions?.reduce((sum, s) => sum + Math.ceil(s.content.length / 1.5), 0) || 0
+        });
+      }
+    } catch (error) {
+      console.error('获取建议失败:', error);
+    }
   }, [addHistory]);
 
   // 处理建议
@@ -194,12 +283,42 @@ const Dashboard = () => {
 
         </PanelGroup>
         
+        {/* Live Transcript Panel */}
+        <AnimatePresence>
+          {showTranscriptPanel && (
+            <LiveTranscriptPanel
+              isRecording={isRecording}
+              transcripts={transcripts}
+              currentText={currentStreamingText}
+              onClose={() => setShowTranscriptPanel(false)}
+              onClear={clearTranscripts}
+              onSendText={handleSendText}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Toggle Transcript Panel Button */}
+        {!showTranscriptPanel && (
+          <button
+            onClick={() => setShowTranscriptPanel(true)}
+            className="fixed bottom-28 right-6 z-40 flex items-center gap-2 px-4 py-2 rounded-full 
+              bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-200
+              border border-gray-200 dark:border-zinc-700 shadow-lg
+              hover:shadow-xl transition-all"
+          >
+            <MessageSquare size={16} />
+            <span className="text-sm font-medium">显示语音面板</span>
+          </button>
+        )}
+        
         {/* Floating Audio Visualizer */}
         <AudioVisualizer 
           isActive={isListening} 
           onClick={(recording) => setIsListening(recording)}
           onTranscript={handleTranscript}
           onSuggestions={handleSuggestions}
+          onStreamingText={handleStreamingText}
+          onRecordingChange={handleRecordingChange}
         />
       </div>
     </div>

@@ -41,6 +41,7 @@ class TranscribeRequest(BaseModel):
     """语音转文字请求"""
     audio_data: str  # base64 编码的音频数据
     sample_rate: int = 16000
+    format: Optional[str] = "webm"  # 音频格式：webm, wav, ogg
 
 
 class TranscribeResponse(BaseModel):
